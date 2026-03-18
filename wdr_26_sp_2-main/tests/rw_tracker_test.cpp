@@ -53,7 +53,7 @@ int main(int argc, char* argv[]) {
     cv::Mat img;
     std::chrono::steady_clock::time_point t;
     std::chrono::steady_clock::time_point last_timestamp = std::chrono::steady_clock::now();
-    auto time_offset_us = std::chrono::microseconds(22500);   //22500 1400
+    auto time_offset_us = std::chrono::microseconds(1200);   //22500 1400
     // auto time_offset_us = std::chrono::microseconds(1200);
     int a = 0;
 
@@ -213,22 +213,36 @@ int main(int argc, char* argv[]) {
         double actual_yaw_err = std::abs(tools::limit_rad(plan.target_yaw - gimbal.state().yaw));
         double actual_pitch_err = std::abs(plan.target_pitch - gimbal.state().pitch);
 
-        bool is_gimbal_ready = actual_yaw_err < 0.035 /*&& actual_pitch_err < 0.015*/; // 0.04 0.02 约 2.3  1.1 度
-        bool final_fire = plan.fire && is_gimbal_ready && gimbal.state().fire_calm; 
+        // 整车中心开火门限：yaw / pitch 双轴同时满足，并限制合成角误差
+        constexpr double FIRE_CENTER_YAW_ERR_THRES = 0.035;    // 约 2.0°
+        constexpr double FIRE_CENTER_PITCH_ERR_THRES = 0.015;  // 约 0.86°
+        constexpr double FIRE_CENTER_TOTAL_ERR_THRES = 0.038;  // 合成角误差门限
+
+        bool is_yaw_ready = actual_yaw_err < FIRE_CENTER_YAW_ERR_THRES;
+        bool is_pitch_ready = actual_pitch_err < FIRE_CENTER_PITCH_ERR_THRES;
+        double center_angle_err = std::hypot(actual_yaw_err, actual_pitch_err);
+        bool is_center_ready = is_yaw_ready && is_pitch_ready && center_angle_err < FIRE_CENTER_TOTAL_ERR_THRES;
+        bool is_strict_tracking = rw_tracker.tracker_state == auto_aim::RWTracker::TrackState::TRACKING;
+
+        bool final_fire =
+            plan.fire &&
+            is_center_ready &&
+            is_strict_tracking &&
+            (recovery_frames <= 0) &&
+            gimbal.state().fire_calm;
 
         if (rw_tracker.tracker_state == auto_aim::RWTracker::TrackState::TRACKING
             || rw_tracker.tracker_state == auto_aim::RWTracker::TrackState::TEMP_LOST)
         {   
-            gimbal.send_ui(  //传距离，方便画ui
+            gimbal.send(
                 plan.control,
                 final_fire,
-                plan.yaw,
+                plan.target_yaw,
                 plan.yaw_vel,
                 plan.yaw_acc,
-                plan.pitch,
+                plan.target_pitch,
                 plan.pitch_vel,
-                plan.pitch_acc,
-                plan.dist
+                plan.pitch_acc
                 //plan.yaw * 1.1,
                 // target.get_state()[0],
                 // target.get_state()[2],
@@ -241,9 +255,8 @@ int main(int argc, char* argv[]) {
             );
         } else {
             // gimbal.send_sentry(false, false, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0);
-            gimbal.send_lose_ui(
-                gimbal.state(),
-                0
+            gimbal.send_lose(
+                gimbal.state()
                 // // plan.control,
                 // 0,
                 // plan.fire,
@@ -289,26 +302,26 @@ int main(int argc, char* argv[]) {
 
         data["fire"] = final_fire ? 1 : 0;
         data["plan_fire"] = plan.fire ? 1 : 0;
-        data["is_gimbal_ready"] = is_gimbal_ready ? 1 : 0;
-        data["is_yaw_ready"] = actual_yaw_err < 0.035 ? 1 : 0;
-        data["is_pitch_ready"] = actual_pitch_err < 0.015 ? 1 : 0;
+        data["is_gimbal_ready"] = is_center_ready ? 1 : 0;
+        data["is_yaw_ready"] = is_yaw_ready ? 1 : 0;
+        data["is_pitch_ready"] = is_pitch_ready ? 1 : 0;
+        data["center_angle_err"] = center_angle_err;
         data["target_yaw"] = plan.target_yaw;
         data["target_pitch"] = plan.target_pitch;
 
         data["max_window_yaw_err"] = plan.max_window_yaw_err;
         data["max_window_pitch_err"] = plan.max_window_pitch_err;
-        data["dist"]=plan.dist;
+        
         
         data["actual_yaw_err"] = actual_yaw_err;
         data["actual_pitch_err"] = actual_pitch_err;
 
         data["fire_calm"] = gimbal.state().fire_calm;
-
         //data["bullet_speed"] = gimbal.state().bullet_speed;
         //data["bullet_count"] = gimbal.state().bullet_count;
         if(rw_tracker.tracker_state == auto_aim::RWTracker::TrackState::TRACKING
             || rw_tracker.tracker_state == auto_aim::RWTracker::TrackState::TEMP_LOST){
-                data["send_yaw"]= plan.yaw;
+                data["send_yaw"]= plan.target_yaw;
             }
         else{
             data["send_yaw"]= gimbal.state().yaw;

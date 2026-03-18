@@ -390,23 +390,23 @@ Eigen::Matrix<double, 2, 1> Planner::aim_from_state(
   int armor_num,
   double bullet_speed)
 {
+  if (state_x.size() < 11) {
+    throw std::runtime_error("Invalid tracker state size");
+  }
+
+  // yaw：整车中心；pitch：跟随单块装甲板
   auto armor_list = compute_armor_xyza(state_x, armor_num);
 
-  // -------------------------------
-  // 点积法：选出最正对摄像头的装甲板
-  // -------------------------------
+  // 选出最正对摄像头的装甲板，用于 pitch 轴
   double best_score = -1e9;
   int best_id = -1;
-
   for (int i = 0; i < armor_num; i++) {
       const auto &xyza = armor_list[i];
 
-      double ax = xyza[0];
-      double ay = xyza[1];
-      double az = xyza[2];
-      double yaw = xyza[3];
+      const double ax = xyza[0];
+      const double ay = xyza[1];
+      const double yaw = xyza[3];
 
-      // 摄像头在世界系原点
       Eigen::Vector2d v(ax, ay);
       double dist = v.norm();
       if (dist < 1e-6) continue;
@@ -415,40 +415,41 @@ Eigen::Matrix<double, 2, 1> Planner::aim_from_state(
       // 装甲板前向向量
       Eigen::Vector2d f(std::cos(yaw), std::sin(yaw));
 
-      // 点积
+      // 点积越大越正对摄像头
       double score = f.dot(-v_hat);
-
       if (score > best_score) {
           best_score = score;
           best_id = i;
       }
   }
 
-  if (best_id < 0)
-      throw std::runtime_error("No armor selected!");
+  if (best_id < 0) {
+    throw std::runtime_error("No armor selected for pitch");
+  }
 
-  // -------------------------------
-  // 选中的装甲板（世界系）
-  // -------------------------------
   const auto &best_xyza = armor_list[best_id];
-  Eigen::Vector3d xyz(best_xyza[0], best_xyza[1], best_xyza[2]);
-  double yaw = best_xyza[3];
 
-  // 供外部绘图使用（世界系）
-  debug_xyza = Eigen::Vector4d(xyz.x(), xyz.y(), xyz.z(), yaw);
+  const double xc = state_x[0];
+  const double yc = state_x[2];
+  const double center_azim = std::atan2(yc, xc);
+
+  // pitch 按当前选中装甲板求解弹道
+  Eigen::Vector3d armor_xyz(best_xyza[0], best_xyza[1], best_xyza[2]);
+
+  // 供调试使用：记录当前用于 pitch 的装甲板
+  debug_xyza = best_xyza;
 
   // -------------------------------
   // 计算瞄准角
   // -------------------------------
-  double min_dist = xyz.head<2>().norm();
-  double azim = std::atan2(xyz.y(), xyz.x());
+  double min_dist = armor_xyz.head<2>().norm();
 
-  auto bullet_traj = tools::Trajectory(bullet_speed, min_dist, xyz.z());
+  auto bullet_traj = tools::Trajectory(bullet_speed, min_dist, armor_xyz.z());
   if (bullet_traj.unsolvable)
       throw std::runtime_error("Unsolvable bullet trajectory!");
 
   return {
-      tools::limit_rad(azim + yaw_offset_),
+      tools::limit_rad(center_azim + yaw_offset_),
       -bullet_traj.pitch - pitch_offset_
   };
 }
@@ -491,10 +492,31 @@ Plan Planner::plan(const Eigen::VectorXd& tracker_state, int tracked_armors_num,
   double initial_dt = send_time + comm_delay_+delay_time;
   Eigen::VectorXd current_state = predict_state(tracker_state, initial_dt);
 
-  // 2. 拿到目前的装甲板坐标并估算飞行时间
+  // 2. 飞行时间按“当前用于 pitch 的装甲板”估算（yaw 仍由中心给出）
   auto armors = compute_armor_xyza(current_state, tracked_armors_num);
-  double min_dist = 1e10;  double target_z = 0;
-  for(auto &a : armors) { if(a.head<2>().norm() < min_dist) { min_dist = a.head<2>().norm(); target_z = a.z(); } }
+  double min_dist = std::hypot(current_state[0], current_state[2]);
+  double target_z = current_state[4];
+  double best_score = -1e9;
+  for (int i = 0; i < tracked_armors_num; ++i) {
+    const auto& xyza = armors[i];
+    const double ax = xyza[0];
+    const double ay = xyza[1];
+    const double yaw = xyza[3];
+
+    Eigen::Vector2d v(ax, ay);
+    double dist = v.norm();
+    if (dist < 1e-6) {
+      continue;
+    }
+    Eigen::Vector2d v_hat = v / dist;
+    Eigen::Vector2d f(std::cos(yaw), std::sin(yaw));
+    double score = f.dot(-v_hat);
+    if (score > best_score) {
+      best_score = score;
+      min_dist = dist;
+      target_z = xyza[2];
+    }
+  }
 
   auto bullet_traj = tools::Trajectory(bullet_speed, min_dist, target_z);
 
@@ -534,7 +556,6 @@ Plan Planner::plan(const Eigen::VectorXd& tracker_state, int tracked_armors_num,
   Plan plan;
   plan.control = true;
 
-  plan.dist=min_dist;
   plan.target_yaw = tools::limit_rad(traj(0, HALF_HORIZON) + yaw0);
   plan.target_pitch = traj(2, HALF_HORIZON);
 

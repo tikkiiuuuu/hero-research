@@ -1110,8 +1110,8 @@ double auto_aim::RWTracker::normalize_angle(double angle) {
      {
          return;
      }
- 
-     /* 绘制本次预测装甲板 */
+
+  /* 绘制本次预测装甲板 */
      std::cout<<"debug: drawResults"<<std::endl;
      for (int i = 0; i < this->tracked_armors_num; i++)
      {
