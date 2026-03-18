@@ -1,6 +1,7 @@
 #include "planner.hpp"
 
 #include <vector>
+#include <limits>
 
 #include "tools/math_tools.hpp"
 #include "tools/trajectory.hpp"
@@ -247,35 +248,29 @@ Plan Planner::plan(RWTracker::ShowTargetInterface & target, double bullet_speed,
   //     traj(2, HALF_HORIZON + shoot_offset_) -
   //       pitch_solver_->work->x(0, HALF_HORIZON + shoot_offset_)) < fire_thresh_;
 
-  int min_shoot_offset = 0; 
-  int max_shoot_offset = 10; 
-  
-  if(is_spinning) { max_shoot_offset = 2;}  //高速小陀螺 窄窗口
-  
+    // 在“子弹到达装甲板”的时刻遍历所有装甲板，只要有一块板满足旧的合成误差阈值就开火
+    const double center_yaw_err = std::abs(tools::limit_rad(plan.target_yaw - plan.yaw));
+    double best_pitch_err = std::numeric_limits<double>::infinity();
+    double best_fire_err = std::numeric_limits<double>::infinity();
 
-  bool can_fire = true;
-  double max_window_yaw_err = 0.0;
-  double max_window_pitch_err = 0.0;
-
-  for (int offset = min_shoot_offset; offset <= max_shoot_offset; ++offset) {
-      // 确保不越界
-      if (HALF_HORIZON + offset >= HORIZON) break; 
-
-      double yaw_err = std::abs(traj(0, HALF_HORIZON + offset) - yaw_solver_->work->x(0, HALF_HORIZON + offset));
-      double pitch_err = std::abs(traj(2, HALF_HORIZON + offset) - pitch_solver_->work->x(0, HALF_HORIZON + offset));
-      
-      // 记录窗口内的最大误差
-      max_window_yaw_err = std::max(max_window_yaw_err, yaw_err);
-      max_window_pitch_err = std::max(max_window_pitch_err, pitch_err);
-
-      plan.max_window_pitch_err=max_window_pitch_err;
-      plan.max_window_yaw_err=max_window_yaw_err;
-      if (yaw_err > yaw_fire_thresh_ || pitch_err > pitch_fire_thresh_) {
-          can_fire = false;
-          break; // 只要在这个时间窗口内有任何一刻误差超标，就不开火
+    for (const auto & armor : target.armor_xyza_list()) {
+      const double armor_dist = std::hypot(armor[0], armor[1]);
+      const auto armor_bullet_traj = tools::Trajectory(bullet_speed, armor_dist, armor[2]);
+      if (armor_bullet_traj.unsolvable) {
+        continue;
       }
-  }
-  plan.fire = can_fire;
+
+      const double armor_pitch = -armor_bullet_traj.pitch - pitch_offset_;
+      const double pitch_err = std::abs(armor_pitch - plan.target_pitch);
+
+      best_pitch_err = std::min(best_pitch_err, pitch_err);
+      best_fire_err = std::min(best_fire_err, std::hypot(center_yaw_err, pitch_err));
+    }
+
+    plan.max_window_yaw_err = center_yaw_err;
+    plan.max_window_pitch_err = best_pitch_err;
+
+    plan.fire = std::isfinite(best_fire_err) && best_fire_err < fire_thresh_;
 
   // plan.fire= (traj(0, HALF_HORIZON + shoot_offset_) - yaw_solver_->work->x(0, HALF_HORIZON + shoot_offset_)<yaw_fire_thresh_) &&
   //            (traj(2, HALF_HORIZON + shoot_offset_) - pitch_solver_->work->x(0, HALF_HORIZON + shoot_offset_)<pitch_fire_thresh_);
@@ -525,6 +520,7 @@ Plan Planner::plan(const Eigen::VectorXd& tracker_state, int tracked_armors_num,
   // target.predict(delay_time + bullet_traj.fly_time);
   // 3. 补充子弹飞行时间
   current_state = predict_state(current_state, bullet_traj.fly_time);
+  const auto armors_at_impact = compute_armor_xyza(current_state, tracked_armors_num);
 
 
   // 2. Get trajectory
@@ -574,35 +570,27 @@ Plan Planner::plan(const Eigen::VectorXd& tracker_state, int tracked_armors_num,
   //     traj(2, HALF_HORIZON + shoot_offset_) -
   //       pitch_solver_->work->x(0, HALF_HORIZON + shoot_offset_)) < fire_thresh_;
 
-  int min_shoot_offset = 0; 
-  int max_shoot_offset = 10; 
-  
-  if(is_spinning) { max_shoot_offset = 2;}  //高速小陀螺 窄窗口
-  
+    const double center_yaw_err = std::abs(tools::limit_rad(plan.target_yaw - plan.yaw));
+    double best_pitch_err = std::numeric_limits<double>::infinity();
+    double best_fire_err = std::numeric_limits<double>::infinity();
 
-  bool can_fire = true;
-  double max_window_yaw_err = 0.0;
-  double max_window_pitch_err = 0.0;
-
-  for (int offset = min_shoot_offset; offset <= max_shoot_offset; ++offset) {
-      // 确保不越界
-      if (HALF_HORIZON + offset >= HORIZON) break; 
-
-      double yaw_err = std::abs(traj(0, HALF_HORIZON + offset) - yaw_solver_->work->x(0, HALF_HORIZON + offset));
-      double pitch_err = std::abs(traj(2, HALF_HORIZON + offset) - pitch_solver_->work->x(0, HALF_HORIZON + offset));
-      
-      // 记录窗口内的最大误差
-      max_window_yaw_err = std::max(max_window_yaw_err, yaw_err);
-      max_window_pitch_err = std::max(max_window_pitch_err, pitch_err);
-
-      plan.max_window_pitch_err=max_window_pitch_err;
-      plan.max_window_yaw_err=max_window_yaw_err;
-      if (yaw_err > yaw_fire_thresh_ || pitch_err > pitch_fire_thresh_) {
-          can_fire = false;
-          break; // 只要在这个时间窗口内有任何一刻误差超标，就不开火
+    for (const auto & armor : armors_at_impact) {
+      const double armor_dist = std::hypot(armor[0], armor[1]);
+      const auto armor_bullet_traj = tools::Trajectory(bullet_speed, armor_dist, armor[2]);
+      if (armor_bullet_traj.unsolvable) {
+        continue;
       }
-  }
-  plan.fire = can_fire;
+
+      const double armor_pitch = -armor_bullet_traj.pitch - pitch_offset_;
+      const double pitch_err = std::abs(armor_pitch - plan.target_pitch);
+
+      best_pitch_err = std::min(best_pitch_err, pitch_err);
+      best_fire_err = std::min(best_fire_err, std::hypot(center_yaw_err, pitch_err));
+    }
+
+    plan.max_window_yaw_err = center_yaw_err;
+    plan.max_window_pitch_err = best_pitch_err;
+    plan.fire = best_fire_err < fire_thresh_;
 
   // plan.fire= (traj(0, HALF_HORIZON + shoot_offset_) - yaw_solver_->work->x(0, HALF_HORIZON + shoot_offset_)<yaw_fire_thresh_) &&
   //            (traj(2, HALF_HORIZON + shoot_offset_) - pitch_solver_->work->x(0, HALF_HORIZON + shoot_offset_)<pitch_fire_thresh_);

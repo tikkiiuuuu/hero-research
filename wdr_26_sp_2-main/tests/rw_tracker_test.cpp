@@ -53,7 +53,7 @@ int main(int argc, char* argv[]) {
     cv::Mat img;
     std::chrono::steady_clock::time_point t;
     std::chrono::steady_clock::time_point last_timestamp = std::chrono::steady_clock::now();
-    auto time_offset_us = std::chrono::microseconds(1200);   //22500 1400
+    auto time_offset_us = std::chrono::microseconds(1200);   // 1400
     // auto time_offset_us = std::chrono::microseconds(1200);
     int a = 0;
 
@@ -238,11 +238,11 @@ int main(int argc, char* argv[]) {
                 plan.control,
                 final_fire,
                 plan.target_yaw,
-                plan.yaw_vel,
-                plan.yaw_acc,
+                0.0f,
+                0.0f,
                 plan.target_pitch,
-                plan.pitch_vel,
-                plan.pitch_acc
+                0.0f,
+                0.0f
                 //plan.yaw * 1.1,
                 // target.get_state()[0],
                 // target.get_state()[2],
