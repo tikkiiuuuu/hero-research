@@ -24,4 +24,5 @@ armor_observer_auxiliary/
 Gimbal/
 tmp/
 *.txt
+!CMakeLists.txt
 *.jpg
