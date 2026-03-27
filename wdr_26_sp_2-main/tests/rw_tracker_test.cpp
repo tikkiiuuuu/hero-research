@@ -333,7 +333,7 @@ int main(int argc, char* argv[]) {
         plotter.plot(data);
         cv::resize(img, img, {}, 0.5, 0.5); // 显示时缩小图片尺寸
         cv::imshow("reprojection", img);
-        auto key = cv::waitKey(2);
+        auto key = cv::waitKey(30);
         // auto key = cv::waitKey(13);
         if (key == '=' || key == '+') {
             time_offset_us += std::chrono::microseconds(100);

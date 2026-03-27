@@ -127,6 +127,7 @@ add_executable(rw_tracker_test tests/rw_tracker_test.cpp)
 add_executable(rw_aim_test tests/rw_aim_test.cpp)
 add_executable(latency_test tests/latency_test.cpp)
 add_executable(mt_rw_tracker_test tests/mt_rw_tracker_test.cpp)
+add_executable(gamma_test tests/gamma_test.cpp)
 
 
 target_link_libraries(auto_aim_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io auto_aim)
@@ -148,6 +149,7 @@ target_link_libraries(minimum_vision_system ${OpenCV_LIBS} fmt::fmt yaml-cpp too
 target_link_libraries(auto_rwaim_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io auto_aim)
 target_link_libraries(rw_tracker_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io auto_aim)
 target_link_libraries(mt_rw_tracker_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io auto_aim)
+target_link_libraries(gamma_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io auto_aim)
 target_link_libraries(rw_aim_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io auto_aim)
 target_link_libraries(latency_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io auto_aim)
 add_executable(gimbal_test tests/gimbal_test.cpp)
