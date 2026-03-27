@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <fstream>
 #include <numeric>
 #include <opencv2/opencv.hpp>
 #include <thread>
@@ -25,8 +26,11 @@
 using namespace std::chrono_literals;
 
 const std::string keys =
-    "{help h usage ? |                        | 输出命令行参数说明}"
-    "{@config-path   | configs/standard_rw.yaml | 位置参数，yaml配置文件路径 }";
+  "{help h usage ? |                   | 输出命令行参数说明 }"
+    "{config-path c  | configs/standard_rw.yaml | yaml配置文件的路径}"
+  "{start-index s  | 0                 | 视频起始帧下标    }"
+  "{end-index e    | 0                 | 视频结束帧下标    }"
+  "{@input-path    | assets/demo/demo  | avi和txt文件的路径}";
 
 int main(int argc, char* argv[]) {
     tools::Exiter exiter;
@@ -34,15 +38,25 @@ int main(int argc, char* argv[]) {
     //tools::Recorder recorder(60);
 
     cv::CommandLineParser cli(argc, argv, keys);
-    auto config_path = cli.get<std::string>(0);
+    auto config_path = cli.get<std::string>("config-path");
     if (cli.has("help") || config_path.empty()) {
         cli.printMessage();
         return 0;
     }
-    auto_aim::Detector detector(config_path);
+    auto input_path = cli.get<std::string>(0);
+    auto start_index = cli.get<int>("start-index");
+    auto end_index = cli.get<int>("end-index");
 
-    io::Gimbal gimbal(config_path);
-    io::Camera camera(config_path);
+    auto video_path = fmt::format("{}.avi", input_path);
+    auto text_path = fmt::format("{}.txt", input_path);
+    cv::VideoCapture video(video_path);
+    std::ifstream text(text_path);
+    if (!video.isOpened() || !text.is_open()) {
+        tools::logger()->error("[rw_tracker_test] Failed to open demo files: {} / {}", video_path, text_path);
+        return 1;
+    }
+
+    auto_aim::Detector detector(config_path);
 
     auto_aim::Solver solver(config_path);
     auto_aim::Planner planner(config_path);
@@ -52,6 +66,7 @@ int main(int argc, char* argv[]) {
 
     cv::Mat img;
     std::chrono::steady_clock::time_point t;
+    auto t0 = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point last_timestamp = std::chrono::steady_clock::now();
     auto time_offset_us = std::chrono::microseconds(1200);   // 1400
     // auto time_offset_us = std::chrono::microseconds(1200);
@@ -61,8 +76,8 @@ int main(int argc, char* argv[]) {
     auto_aim::RWTracker::TrackState last_track_state = auto_aim::RWTracker::TrackState::LOST;
     int recovery_frames = 0;
 
-    float last_plan_yaw = gimbal.state().yaw;
-    float last_plan_pitch = gimbal.state().pitch;
+    float last_plan_yaw = 0.0f;
+    float last_plan_pitch = 0.0f;
     bool has_last_plan = false;
     constexpr float MAX_PLAN_YAW_STEP = 0.08f; // 每帧最大变化约 4.6 度，可调
     constexpr float MAX_PLAN_PITCH_STEP = 0.05f; // pitch 变化可稍严一点
@@ -75,12 +90,39 @@ int main(int argc, char* argv[]) {
     constexpr float MAX_WINDOW_YAW_CHANGE = 0.35f;   // 10帧内总yaw变化约 20度
     constexpr float MAX_WINDOW_PITCH_CHANGE = 0.20f; // 10帧内总pitch变化约 11度
 
-    while (!exiter.exit()) {
+    video.set(cv::CAP_PROP_POS_FRAMES, start_index);
+    for (int i = 0; i < start_index; i++) {
+        double td, w, x, y, z;
+        text >> td >> w >> x >> y >> z;
+    }
+
+    for (int frame_count = start_index; !exiter.exit(); frame_count++) {
+        if (end_index > 0 && frame_count > end_index) {
+            break;
+        }
+
         std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
-        camera.read(img, t);
-        // auto q = gimbal.q(t+100us);
-        auto q = gimbal.q(t + time_offset_us);
-        rw_tracker.set_enemy_color(gimbal.state().enemy_color); //设置敌方颜色
+        video.read(img);
+        if (img.empty()) {
+            break;
+        }
+
+        double td, w, x, y, z;
+        if (!(text >> td >> w >> x >> y >> z)) {
+            break;
+        }
+        t = t0 + std::chrono::microseconds(int(td * 1e6));
+
+        Eigen::Quaterniond q(w, x, y, z);
+        auto gimbal_euler = tools::eulers(q, 2, 1, 0);
+        const float gimbal_yaw = gimbal_euler[0];
+        const float gimbal_pitch = gimbal_euler[1];
+        const float gimbal_yaw_vel = 0.0f;
+        const float gimbal_pitch_vel = 0.0f;
+        const bool fire_calm = true;
+        const uint8_t enemy_color = 0;
+
+        rw_tracker.set_enemy_color(enemy_color); //设置敌方颜色
         rw_tracker.dt_ = tools::delta_time(t, last_timestamp);
         last_timestamp = t;
         solver.set_R_gimbal2world(q);
@@ -108,7 +150,7 @@ int main(int argc, char* argv[]) {
         data["camera_x"] = camera_x;
         data["camera_y"] = camera_y;
         data["camera_z"] = camera_z;
-        data["enemy_color"]=gimbal.state().enemy_color;
+        data["enemy_color"]=enemy_color;
         rw_tracker.drawResults(img);
         std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
         data["dt"] = tools::delta_time(t2, t1);
@@ -136,8 +178,8 @@ int main(int argc, char* argv[]) {
                 tools::delta_time(t2, t)           
             );
                 plan.control=false;
-                plan.pitch=gimbal.state().pitch;
-                plan.yaw=gimbal.state().yaw;
+                plan.pitch=gimbal_pitch;
+                plan.yaw=gimbal_yaw;
                 
                 // 刚追踪时速度不可信，直接干掉前馈速度防止疯卷
                 plan.yaw_vel = 0.0f;
@@ -210,8 +252,8 @@ int main(int argc, char* argv[]) {
             past_pitch_deltas.clear();
         }
 
-        double actual_yaw_err = std::abs(tools::limit_rad(plan.target_yaw - gimbal.state().yaw));
-        double actual_pitch_err = std::abs(plan.target_pitch - gimbal.state().pitch);
+        double actual_yaw_err = std::abs(tools::limit_rad(plan.target_yaw - gimbal_yaw));
+        double actual_pitch_err = std::abs(plan.target_pitch - gimbal_pitch);
 
         // 整车中心开火门限：yaw / pitch 双轴同时满足，并限制合成角误差
         constexpr double FIRE_CENTER_YAW_ERR_THRES = 0.035;    // 约 2.0°
@@ -229,64 +271,17 @@ int main(int argc, char* argv[]) {
             is_center_ready &&
             is_strict_tracking &&
             (recovery_frames <= 0) &&
-            gimbal.state().fire_calm;
-
-        if (rw_tracker.tracker_state == auto_aim::RWTracker::TrackState::TRACKING
-            || rw_tracker.tracker_state == auto_aim::RWTracker::TrackState::TEMP_LOST)
-        {   
-            gimbal.send(
-                plan.control,
-                final_fire,
-                plan.target_yaw,
-                0.0f,
-                0.0f,
-                plan.target_pitch,
-                0.0f,
-                0.0f
-                //plan.yaw * 1.1,
-                // target.get_state()[0],
-                // target.get_state()[2],
-                // target.get_state()[4],
-                //0.0,
-                //0.0,
-                //0.0,
-                //0,
-                //0
-            );
-        } else {
-            // gimbal.send_sentry(false, false, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0);
-            gimbal.send_lose(
-                gimbal.state()
-                // // plan.control,
-                // 0,
-                // plan.fire,
-                // plan.yaw,
-                // plan.yaw_vel,
-                // plan.yaw_acc,
-                // plan.pitch,
-                // plan.pitch_vel,
-                // plan.pitch_acc
-                // //plan.yaw * 1.1,
-                // // target.get_state()[0],
-                // // target.get_state()[2],
-                // // target.get_state()[4],
-                // //0.0,
-                // //0.0,
-                // //0.0,
-                // //0,
-                // //0
-            );
-        }
+            fire_calm;
         data["plan_yaw"] = plan.yaw;
         data["plan_yaw_vel"] = plan.yaw_vel;
         data["plan_yaw_acc"] = plan.yaw_acc;
         data["plan_pitch"] = plan.pitch;
         data["plan_pitch_vel"] = plan.pitch_vel;
         data["plan_pitch_acc"] = plan.pitch_acc;
-        data["gimbal_yaw"] = gimbal.state().yaw;
-        data["gimbal_yaw_vel"] = gimbal.state().yaw_vel;
-        data["gimbal_pitch"] = gimbal.state().pitch;
-        data["gimbal_pitch_vel"] = gimbal.state().pitch_vel;
+        data["gimbal_yaw"] = gimbal_yaw;
+        data["gimbal_yaw_vel"] = gimbal_yaw_vel;
+        data["gimbal_pitch"] = gimbal_pitch;
+        data["gimbal_pitch_vel"] = gimbal_pitch_vel;
         data["temp_lost"] = rw_tracker.tracker_state == auto_aim::RWTracker::TrackState::TEMP_LOST;
         data["lost"] = rw_tracker.tracker_state == auto_aim::RWTracker::TrackState::LOST;
         data["detecting"] = rw_tracker.tracker_state == auto_aim::RWTracker::TrackState::DETECTING;
@@ -297,8 +292,8 @@ int main(int argc, char* argv[]) {
         data["tracker_center_theta"] = rw_tracker.target_state[6];
         data["tracker_center_omega"] = rw_tracker.target_state[7];
         data["tracker_center_r1"] = rw_tracker.target_state[8];
-        data["gimbal_yaw"] = gimbal.state().yaw;
-        data["gimbal_pitch"] = gimbal.state().pitch;
+        data["gimbal_yaw"] = gimbal_yaw;
+        data["gimbal_pitch"] = gimbal_pitch;
 
         data["fire"] = final_fire ? 1 : 0;
         data["plan_fire"] = plan.fire ? 1 : 0;
@@ -316,7 +311,7 @@ int main(int argc, char* argv[]) {
         data["actual_yaw_err"] = actual_yaw_err;
         data["actual_pitch_err"] = actual_pitch_err;
 
-        data["fire_calm"] = gimbal.state().fire_calm;
+        data["fire_calm"] = fire_calm;
         //data["bullet_speed"] = gimbal.state().bullet_speed;
         //data["bullet_count"] = gimbal.state().bullet_count;
         if(rw_tracker.tracker_state == auto_aim::RWTracker::TrackState::TRACKING
@@ -324,7 +319,7 @@ int main(int argc, char* argv[]) {
                 data["send_yaw"]= plan.target_yaw;
             }
         else{
-            data["send_yaw"]= gimbal.state().yaw;
+            data["send_yaw"]= gimbal_yaw;
         }  
         // plotter.plot(data);
 
